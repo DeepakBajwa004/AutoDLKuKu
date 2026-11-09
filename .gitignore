@@ -1,0 +1,22 @@
+# Credentials & Sensitive Secrets
+config.env
+.env
+*.session
+*.session-journal
+.restartmsg
+
+# Logs & Runtime
+log.txt
+*.log
+temp/
+downloads/
+*.tmp
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# OS Files
+.DS_Store
+Thumbs.db
