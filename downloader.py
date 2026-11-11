@@ -26,6 +26,8 @@ async def download_all_episodes(
     cover_art_path: Optional[str] = None,
     progress_cb: Optional[Callable] = None,
     selected_quality: str = "1080p",
+    platform: str = "kuku",
+    refetch_cb: Optional[Callable[[], Any]] = None,
 ) -> List[str]:
     """
     Downloads all episodes using PrimeXMasoom's native parallel engines.
@@ -41,12 +43,14 @@ async def download_all_episodes(
             status_cb=progress_cb,
         )
     else:
-        logger.info(f"🎬 [kuku-video] Launching video FastDL engine for {len(episodes)} episodes @ {selected_quality}: '{show_title}'")
+        plat = (platform or "kuku").strip().lower()
+        logger.info(f"🎬 [{plat}-video] Launching video FastDL engine for {len(episodes)} episodes @ {selected_quality}: '{show_title}'")
         return await download_all_dashreels_episodes(
             episodes=episodes,
             out_dir=work_dir,
             title=show_title,
             quality=selected_quality,
             status_cb=progress_cb,
-            platform="kuku",
+            refetch_cb=refetch_cb,
+            platform=plat,
         )

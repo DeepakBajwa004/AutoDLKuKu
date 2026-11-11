@@ -1026,6 +1026,7 @@ async def merge_video_episodes(
     watermark_enabled: bool = True,
     watermark_text: Optional[str] = None,
     status_cb: Optional[Callable] = None,
+    source_tag: str = "KUKU",
 ) -> Tuple[Optional[str], int]:
     """Combines video episodes into master release using PrimeXMasoom's merge_and_split engine."""
     if not ep_files:
@@ -1033,10 +1034,11 @@ async def merge_video_episodes(
     first_ep = 1
     last_ep = len(ep_files)
     client_tag = getattr(cfg, "RELEASE_TAG", "@PrimeXDramaBot")
-    source_tag = "KUKU"
+    source_tag = (source_tag or "KUKU").upper()
 
     tags = naming.detect_stream_tags(ep_files[0])
     codec = tags.get("video_codec", "H.264")
+    real_quality = naming.quality_label(tags.get("width", 0), tags.get("height", 0)) if (tags.get("width") and tags.get("height")) else quality
 
     release_filename = naming.build_release_filename(
         show_title=show_title,
@@ -1047,7 +1049,7 @@ async def merge_video_episodes(
         first_ep=first_ep,
         last_ep=last_ep,
         lang=language.title(),
-        custom_quality=quality,
+        custom_quality=real_quality,
         container_ext="mp4",
         video_codec=codec,
     )
@@ -1059,7 +1061,7 @@ async def merge_video_episodes(
         "tags": tags,
         "season_no": 1,
         "lang": language.title(),
-        "custom_quality": quality,
+        "custom_quality": real_quality,
         "container_ext": "mp4",
         "video_codec": codec,
     }

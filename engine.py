@@ -266,10 +266,21 @@ class AutoDLEngine:
         total_count: int,
     ) -> bool:
         """Processes a single pending show from API resolution through download and upload."""
-        title = show_meta.get("title") or slug
+        title = str(show_meta.get("title") or slug).strip()
         show_type = show_meta.get("type", "reel")
-        language = show_meta.get("language", "Hindi").title()
+        language = str(show_meta.get("language", "Hindi")).strip().title()
         published_on = show_meta.get("published_on", "N/A")
+        show_url = str(show_meta.get("url") or "").strip()
+
+        raw_plat = str(show_meta.get("platform") or "").strip().lower()
+        if raw_plat == "storytv" or "storytv" in show_url.lower():
+            platform_name = "StoryTV"
+            source_tag = "STORYTV"
+            dl_platform = "storytv"
+        else:
+            platform_name = "KuKu"
+            source_tag = "KUKU"
+            dl_platform = "kuku"
 
         self.current_show_title = title
         self.current_show_slug = slug
@@ -285,11 +296,12 @@ class AutoDLEngine:
 
         # Initial card
         fetch_src = str(FETCH_SOURCE).lower()
-        src_label = "Lipat Live API" if fetch_src == "lipat" else "KuKu API Flow"
+        src_label = "Lipat Live API" if (fetch_src == "lipat" or platform_name != "KuKu") else "KuKu API Flow"
         header_card = (
             f"🎬 **BATCH PROGRESS: [ {done_count + 1} / {total_count} ]**\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"📖 **Show:** `{title}`\n\n"
+            f"📖 **Show:** `{title}`\n"
+            f"📺 **Platform:** `{platform_name}`\n"
             f"🎞 **Total Episodes:** `{show_meta.get('total_episodes', '?')}` Episodes\n"
             f"🌐 **Language:** {language}\n"
             f"📅 **Published On:** {published_on}\n"
@@ -302,7 +314,11 @@ class AutoDLEngine:
         try:
             # 1. Resolve Show ID
             show_id = str(show_meta.get("id") or "").strip()
-            if not show_id:
+            if not show_id and show_url:
+                m_sid = re.search(r"shows?/(\d+)", show_url)
+                if m_sid:
+                    show_id = m_sid.group(1)
+            if not show_id and platform_name == "KuKu":
                 show_id = await self.resolve_show_id_fallback(slug)
             if not show_id:
                 logger.warning(f"Could not resolve Show ID for '{slug}'. Skipping.")
@@ -312,10 +328,14 @@ class AutoDLEngine:
             poster_url = show_meta.get("poster")
             show_obj = None
 
-            # ─── MODE A: LIPAT LIVE CLOUD DATABASE (Default) ───
-            if fetch_src == "lipat":
-                logger.info(f"📡 Fetching show '{title}' (ID: {show_id}) from Lipat Live API...")
-                lipat_data = await lipat_mgr.fetch_show(show_id=str(show_id), platform_name="KuKu")
+            # ─── MODE A: LIPAT LIVE CLOUD DATABASE (Default, Always for StoryTV) ───
+            if fetch_src == "lipat" or platform_name != "KuKu":
+                logger.info(f"📡 Fetching {platform_name} show '{title}' (ID: {show_id}) from Lipat Live API...")
+                lipat_data = await lipat_mgr.fetch_show(
+                    show_id=str(show_id),
+                    platform_name=platform_name,
+                    show_url=show_url or None,
+                )
                 if lipat_data:
                     raw_eps = lipat_data.get("episodes_data") or lipat_data.get("episodes_list") or []
                     has_locked, locked_nums = lipat_mgr.check_episodes_locked(raw_eps)
@@ -326,11 +346,15 @@ class AutoDLEngine:
                         )
                         await self.update_status_card(f"🔄 **Locked episodes detected on Lipat! Purging & refetching fresh streams...**")
                         # 1. Delete stale show from Lipat DB
-                        await lipat_mgr.delete_show(show_id=str(show_id), platform_name="KuKu")
+                        await lipat_mgr.delete_show(show_id=str(show_id), platform_name=platform_name)
                         await asyncio.sleep(3)
 
                         # 2. Refetch directly from Lipat GET API (Lipat backend re-scrapes fresh unlocked streams)
-                        refetched = await lipat_mgr.fetch_show(show_id=str(show_id), platform_name="KuKu")
+                        refetched = await lipat_mgr.fetch_show(
+                            show_id=str(show_id),
+                            platform_name=platform_name,
+                            show_url=show_url or None,
+                        )
                         if refetched:
                             ref_eps = refetched.get("episodes_data") or refetched.get("episodes_list") or []
                             ref_locked, _ = lipat_mgr.check_episodes_locked(ref_eps)
@@ -338,35 +362,38 @@ class AutoDLEngine:
                                 logger.info(f"✅ Lipat successfully refetched unlocked episodes for '{title}'!")
                                 show_obj = refetched
                                 episodes_data = ref_eps
-                                poster_url = refetched.get("show_poster_url") or poster_url
                     else:
                         show_obj = lipat_data
                         episodes_data = raw_eps
-                        poster_url = lipat_data.get("show_poster_url") or poster_url
 
-                # If Lipat still has locked eps or show was not found, fallback to local KuKu API Flow if present
-                if not episodes_data:
+                # If Lipat still has locked eps or show was not found, fallback to local KuKu API Flow (KuKu only)
+                if not episodes_data and platform_name == "KuKu":
                     logger.info(f"Attempting direct live fallback via KuKu API Flow for '{title}'...")
                     fresh_show = await self._fetch_live_from_kuku_apiflow(show_id, slug)
                     if fresh_show and fresh_show.get("episodes_data"):
                         show_obj = fresh_show
                         episodes_data = fresh_show.get("episodes_data", [])
-                        poster_url = fresh_show.get("show_poster_url") or poster_url
 
-            # ─── MODE B: DIRECT KUKU API FLOW ───
-            if not episodes_data or fetch_src == "kuku":
+            # ─── MODE B: DIRECT KUKU API FLOW (KuKu only) ───
+            if platform_name == "KuKu" and (not episodes_data or fetch_src == "kuku"):
                 fresh_show = await self._fetch_live_from_kuku_apiflow(show_id, slug)
                 if fresh_show and fresh_show.get("episodes_data"):
                     show_obj = fresh_show
                     episodes_data = fresh_show.get("episodes_data", [])
-                    poster_url = fresh_show.get("show_poster_url") or poster_url
 
             if not episodes_data:
                 logger.error(f"❌ Failed to obtain episode data for '{title}' (ID: {show_id}) from {src_label}. Skipping.")
                 return False
 
+            # Sync exact metadata from Lipat/API response (especially for StoryTV URL-fetched shows)
+            if show_obj:
+                title = str(show_obj.get("show_name") or title).strip()
+                language = str(show_obj.get("show_language") or language).strip().title()
+                published_on = str(show_obj.get("show_release_date") or published_on).strip()
+                poster_url = show_obj.get("show_poster_url") or poster_url
+                self.current_show_title = title
+
             total_eps = len(episodes_data)
-            poster_url = show_obj.get("show_poster_url") or show_meta.get("poster")
 
             # Determine Highest Available Quality for Video
             selected_quality = "1080p"
@@ -427,7 +454,15 @@ class AutoDLEngine:
                     )
                     await self.update_status_card(status_text)
 
-            # 4. Download All Episodes
+            # 4. Download All Episodes (with Lipat auto-refetch callback for StoryTV signed tokens)
+            async def _refetch_from_lipat():
+                fresh = await lipat_mgr.fetch_show(
+                    show_id=str(show_id),
+                    platform_name=platform_name,
+                    show_url=show_url or None,
+                )
+                return (fresh.get("episodes_data") or fresh.get("episodes_list") or []) if fresh else []
+
             downloaded_paths = await download_all_episodes(
                 episodes=episodes_data,
                 work_dir=str(work_dir),
@@ -437,6 +472,8 @@ class AutoDLEngine:
                 cover_art_path=cover_art_arg,
                 progress_cb=_dl_progress,
                 selected_quality=selected_quality,
+                platform=dl_platform,
+                refetch_cb=_refetch_from_lipat if dl_platform == "storytv" else None,
             )
 
             if not downloaded_paths or len(downloaded_paths) == 0:
@@ -491,6 +528,7 @@ class AutoDLEngine:
                     language=language,
                     quality=selected_quality,
                     status_cb=_merge_status_cb,
+                    source_tag=source_tag,
                 )
 
             if not merged_file or not os.path.exists(merged_file):
